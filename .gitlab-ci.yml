@@ -1,0 +1,68 @@
+---
+variables:
+  GO_VERSION: "1.25"
+  GO_LINTER_VERSION: "v2.10"
+  GOLANG_IMAGE: golang:${GO_VERSION}-alpine
+  GOPATH: "$CI_PROJECT_DIR/.go"
+  GITLAB_DOCKER_PROXY: gitlab.education.tbank.ru:443/backend-academy-go-2025/lecture-materials/dependency_proxy/containers
+
+cache:
+  paths:
+    - .go/pkg/mod/
+
+stages:
+  - lint
+  - test
+  - build
+
+lint:
+  stage: lint
+  image: golangci/golangci-lint:${GO_LINTER_VERSION}-alpine
+  script:
+    - golangci-lint run -c .golangci.yml --timeout=5m
+  rules:
+    - when: always
+
+test:
+  stage: test
+  image: ${GOLANG_IMAGE}
+  script:
+    - apk add --no-cache gcc musl-dev
+    - go test -race -coverprofile=coverage.out ./...
+    - go tool cover -func=coverage.out
+  coverage: '/total:\s+\(statements\)\s+(\d+.\d+)%/'
+  rules:
+    - when: always
+
+integration_test:
+  image: docker
+  stage: test
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  tags:
+    - dind
+  services:
+    - name: docker:dind
+      alias: docker
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login gitlab.education.tbank.ru:443 -u gitlab-ci-token --password-stdin
+  script:
+    - docker pull ${GITLAB_DOCKER_PROXY}/alpine:latest
+
+build:
+  stage: build
+  image: ${GOLANG_IMAGE}
+  script:
+    - mkdir -p bin
+    - for d in cmd/*; do
+      name="$(basename "$d")";
+      echo "Building $name";
+      go build -o "bin/$name" "./cmd/$name";
+      done
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+    - if: "$CI_COMMIT_BRANCH =~ /^(master|main)$/"
+    - when: never
