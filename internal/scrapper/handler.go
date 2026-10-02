@@ -4,13 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/httphelper"
+)
+
+const (
+	defaultPageLimit = 50
+	maxPageLimit     = 200
 )
 
 type addLinkRequest struct {
@@ -18,6 +26,12 @@ type addLinkRequest struct {
 	Tags     []string `json:"tags"`
 	Filters  []string `json:"filters"`
 	TgChatID int64    `json:"tgChatId"`
+}
+
+type updateLinkRequest struct {
+	TgChatID int64    `json:"tgChatId"`
+	Tags     []string `json:"tags"`
+	Filters  []string `json:"filters"`
 }
 
 type removeLinkRequest struct {
@@ -37,6 +51,16 @@ type listLinksResponse struct {
 	Size  int             `json:"size"`
 }
 
+type chatResponse struct {
+	ID        int64     `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type listChatsResponse struct {
+	Chats []*chatResponse `json:"chats"`
+	Size  int             `json:"size"`
+}
+
 type apiError struct {
 	Description   string   `json:"description"`
 	Code          string   `json:"code"`
@@ -46,18 +70,61 @@ type apiError struct {
 
 // Handler предоставляет HTTP API сервиса Scrapper
 type Handler struct {
-	repo domain.LinkRepository
+	repo    domain.LinkRepository
+	updates domain.UpdateRepository
 }
 
 func NewHandler(repo domain.LinkRepository) *Handler {
 	return &Handler{repo: repo}
 }
 
-func (h *Handler) Router() http.Handler {
+func (h *Handler) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/tg-chat/", h.handleChat) // POST, DELETE
-	mux.HandleFunc("/links", h.handleLinks)   // POST, DELETE, GET
+	mux.HandleFunc("GET /tg-chat", h.listChats)
+	mux.HandleFunc("/tg-chat/", h.handleChat)
+	mux.HandleFunc("/links", h.handleLinks)
+	mux.HandleFunc("PUT /links/{id}", h.updateLink)
+	if h.updates != nil {
+		mux.HandleFunc("GET /updates", h.listUpdates)
+	}
 	return mux
+}
+
+func (h *Handler) Router() http.Handler {
+	return h.newMux()
+}
+
+// RouterWithStatic - API плюс раздача статики фронтенда
+func (h *Handler) RouterWithStatic(static fs.FS) http.Handler {
+	mux := h.newMux()
+	mux.Handle("/", http.FileServerFS(static))
+	return mux
+}
+
+// --- chats ---
+
+func (h *Handler) listChats(w http.ResponseWriter, r *http.Request) {
+	page, err := parsePage(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error(), "BadRequest")
+		return
+	}
+
+	chats, err := h.repo.GetChats(r.Context(), page)
+	if err != nil {
+		slog.Error("list chats failed", "err", err)
+		writeAPIError(w, http.StatusInternalServerError, err.Error(), "InternalError")
+		return
+	}
+
+	resp := listChatsResponse{
+		Chats: make([]*chatResponse, 0, len(chats)),
+		Size:  len(chats),
+	}
+	for _, c := range chats {
+		resp.Chats = append(resp.Chats, &chatResponse{ID: c.ID, CreatedAt: c.CreatedAt})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +169,8 @@ func (h *Handler) deleteChat(ctx context.Context, w http.ResponseWriter, chatID 
 	w.WriteHeader(http.StatusOK)
 }
 
+// --- links ---
+
 func (h *Handler) handleLinks(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -123,7 +192,13 @@ func (h *Handler) getLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	links, err := h.repo.GetLinks(r.Context(), chatID, domain.Page{Limit: limit, Offset: offset}) // TODO
+	page, err := parsePage(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error(), "BadRequest")
+		return
+	}
+
+	links, err := h.repo.GetLinks(r.Context(), chatID, page)
 	if err != nil {
 		if errors.Is(err, domain.ErrChatNotFound) {
 			writeAPIError(w, http.StatusNotFound, "chat not found", "ChatNotFoundException")
@@ -179,6 +254,39 @@ func (h *Handler) addLink(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, linkToResp(link))
 }
 
+// updateLink: PUT /links/{id} — полная замена тегов и фильтров подписки.
+func (h *Handler) updateLink(w http.ResponseWriter, r *http.Request) {
+	linkID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || linkID <= 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid link id", "BadRequest")
+		return
+	}
+
+	var req updateLinkRequest
+	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid request body", "BadRequest")
+		return
+	}
+	if req.TgChatID <= 0 {
+		writeAPIError(w, http.StatusBadRequest, "tgChatId is required", "BadRequest")
+		return
+	}
+
+	link, err := h.repo.UpdateLink(r.Context(), req.TgChatID, linkID, req.Tags, req.Filters)
+	if err != nil {
+		if errors.Is(err, domain.ErrLinkNotFound) {
+			writeAPIError(w, http.StatusNotFound, "link not found", "LinkNotFoundException")
+			return
+		}
+		slog.Error("update link failed", "chat_id", req.TgChatID, "link_id", linkID, "err", err)
+		writeAPIError(w, http.StatusInternalServerError, err.Error(), "InternalError")
+		return
+	}
+
+	slog.Info("link updated", "chat_id", req.TgChatID, "link_id", linkID)
+	writeJSON(w, http.StatusOK, linkToResp(link))
+}
+
 func (h *Handler) removeLink(w http.ResponseWriter, r *http.Request) {
 	var req removeLinkRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -210,6 +318,28 @@ func (h *Handler) removeLink(w http.ResponseWriter, r *http.Request) {
 }
 
 // helpers
+
+// parsePage читает ?limit= и ?offset=; при отсутствии подставляет значения по умолчанию.
+func parsePage(r *http.Request) (domain.Page, error) {
+	q := r.URL.Query()
+	page := domain.Page{Limit: defaultPageLimit, Offset: 0}
+
+	if s := q.Get("limit"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > maxPageLimit {
+			return domain.Page{}, fmt.Errorf("limit must be an integer between 1 and %d", maxPageLimit)
+		}
+		page.Limit = n
+	}
+	if s := q.Get("offset"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			return domain.Page{}, errors.New("offset must be a non-negative integer")
+		}
+		page.Offset = n
+	}
+	return page, nil
+}
 
 func linkToResp(l *domain.Link) *linkResponse {
 	tags := l.Tags

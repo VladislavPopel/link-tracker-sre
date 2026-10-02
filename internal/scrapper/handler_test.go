@@ -71,6 +71,18 @@ func (m *mockLinkRepo) GetAllLinks(_ context.Context, _ domain.Page) ([]*domain.
 	return all, nil
 }
 
+func (m *mockLinkRepo) GetChats(_ context.Context, _ domain.Page) ([]*domain.Chat, error) {
+	return nil, nil
+}
+
+func (m *mockLinkRepo) UpdateLink(
+	_ context.Context,
+	_, _ int64,
+	_, _ []string,
+) (*domain.Link, error) {
+	return nil, domain.ErrLinkNotFound
+}
+
 func newServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	repo := newMockLinkRepo()

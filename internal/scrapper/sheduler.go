@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +27,7 @@ type Scheduler struct {
 	repo        domain.LinkRepository
 	checkers    []LinkChecker
 	sender      MessageSender
-	state       *LinkStateStore
+	state       domain.LinkStateRepository
 	sched       gocron.Scheduler
 	batchSize   int
 	workerCount int
@@ -39,6 +38,7 @@ func NewScheduler(
 	repo domain.LinkRepository,
 	checkers []LinkChecker,
 	sender MessageSender,
+	state domain.LinkStateRepository,
 	interval time.Duration,
 	batchSize int,
 	workerCount int,
@@ -52,7 +52,7 @@ func NewScheduler(
 		repo:        repo,
 		checkers:    checkers,
 		sender:      sender,
-		state:       NewLinkStateStore(),
+		state:       state,
 		sched:       s,
 		batchSize:   batchSize,
 		workerCount: workerCount,
@@ -169,7 +169,7 @@ func (s *Scheduler) processBatch(ctx context.Context, links []*domain.Link) {
 	wg.Wait()
 
 	if len(failedJobs) > 0 {
-		s.reportFailures(ctx, failedJobs)
+		slog.Warn("scheduler: some links could not be checked", "failed", len(failedJobs))
 	}
 }
 
@@ -180,7 +180,10 @@ func (s *Scheduler) processLink(ctx context.Context, job *linkJob) error {
 		return nil
 	}
 
-	since := s.state.Get(job.url)
+	since, err := s.state.GetLastSeen(ctx, job.url)
+	if err != nil {
+		return fmt.Errorf("get state for %s: %w", job.url, err)
+	}
 	isFirstCheck := since.IsZero()
 
 	result, err := checker.Check(ctx, job.url, since)
@@ -194,8 +197,15 @@ func (s *Scheduler) processLink(ctx context.Context, job *linkJob) error {
 		return nil
 	}
 
-	// Обновляем состояние
-	s.state.Set(job.url, result.UpdatedAt.Add(time.Second))
+	// Фиксируем новое состояние атомарно. Выигрывает ровно один экземпляр сервиса;
+	// проигравший молча пропускает событие, иначе пользователь получил бы дубль.
+	won, err := s.state.AdvanceLastSeen(ctx, job.url, since, result.UpdatedAt.Add(time.Second))
+	if err != nil {
+		return fmt.Errorf("advance state for %s: %w", job.url, err)
+	}
+	if !won {
+		return nil
+	}
 
 	if isFirstCheck || result.Info == nil {
 		return nil
@@ -217,37 +227,37 @@ func (s *Scheduler) processLink(ctx context.Context, job *linkJob) error {
 	return nil
 }
 
-// reportFailures собирает все неудачные ссылки по чатам и отправляет отчёт каждому пользователю
-func (s *Scheduler) reportFailures(ctx context.Context, failedJobs []*linkJob) {
-	chatToURLs := make(map[int64][]string)
-	for _, job := range failedJobs {
-		for _, chatID := range job.chatIDs {
-			chatToURLs[chatID] = append(chatToURLs[chatID], job.url)
-		}
-	}
+// // reportFailures собирает все неудачные ссылки по чатам и отправляет отчёт каждому пользователю
+// func (s *Scheduler) reportFailures(ctx context.Context, failedJobs []*linkJob) {
+// 	chatToURLs := make(map[int64][]string)
+// 	for _, job := range failedJobs {
+// 		for _, chatID := range job.chatIDs {
+// 			chatToURLs[chatID] = append(chatToURLs[chatID], job.url)
+// 		}
+// 	}
 
-	for chatID, urls := range chatToURLs {
-		var sb strings.Builder
-		sb.WriteString("⚠️ Не удалось проверить следующие ссылки:\n")
-		for _, u := range urls {
-			sb.WriteString("• ")
-			sb.WriteString(u)
-			sb.WriteByte('\n')
-		}
+// 	for chatID, urls := range chatToURLs {
+// 		var sb strings.Builder
+// 		sb.WriteString("⚠️ Не удалось проверить следующие ссылки:\n")
+// 		for _, u := range urls {
+// 			sb.WriteString("• ")
+// 			sb.WriteString(u)
+// 			sb.WriteByte('\n')
+// 		}
 
-		update := client.LinkUpdate{
-			URL:         "",
-			Description: sb.String(),
-			TgChatIDs:   []int64{chatID},
-		}
-		if err := s.sender.SendUpdate(ctx, update); err != nil {
-			slog.Error("scheduler: failed to report failures",
-				"chat_id", chatID,
-				"err", err,
-			)
-		}
-	}
-}
+// 		update := client.LinkUpdate{
+// 			URL:         "",
+// 			Description: sb.String(),
+// 			TgChatIDs:   []int64{chatID},
+// 		}
+// 		if err := s.sender.SendUpdate(ctx, update); err != nil {
+// 			slog.Error("scheduler: failed to report failures",
+// 				"chat_id", chatID,
+// 				"err", err,
+// 			)
+// 		}
+// 	}
+// }
 
 // formatDescription формирует текст уведомления
 func formatDescription(url string, info *UpdateInfo) string {

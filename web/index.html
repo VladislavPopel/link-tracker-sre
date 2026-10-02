@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Link Tracker</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #6b7385;
+    --border: #dfe3ea; --accent: #2f6fed; --danger: #d63b3b; --chip: #e8eefc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --card: #1d222b; --text: #e6e9ef; --muted: #98a1b3;
+      --border: #2e3541; --accent: #5b8cff; --danger: #ff6b6b; --chip: #26324d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { margin: 0 0 16px; font-size: 24px; }
+  h2 { margin: 0 0 12px; font-size: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border);
+          border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .row:last-child { margin-bottom: 0; }
+  input, select, button { font: inherit; padding: 7px 10px; border-radius: 6px;
+          border: 1px solid var(--border); background: var(--card); color: var(--text); }
+  input { flex: 1; min-width: 140px; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #error { background: #fde8e8; color: #9b1c1c; border: 1px solid #f5b5b5;
+           padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border);
+           vertical-align: top; word-break: break-word; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px;
+          padding: 1px 9px; margin: 0 4px 4px 0; font-size: 13px; }
+  .actions { white-space: nowrap; }
+  .actions button { margin-right: 4px; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); }
+  .pager { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
+  .updates { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; }
+  .update { padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .update:last-child { border-bottom: none; }
+  .update-text { white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Link Tracker</h1>
+  <div id="error" role="alert" hidden></div>
+
+  <section class="card">
+    <h2>Чат</h2>
+    <div class="row">
+      <select id="chat-select" aria-label="Выбор чата"></select>
+      <button id="chat-delete" class="danger" type="button">Удалить чат</button>
+    </div>
+    <form id="chat-form" class="row">
+      <input id="chat-new" type="number" min="1" placeholder="ID нового чата" required>
+      <button class="primary" type="submit">Создать чат</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Уведомления</h2>
+    <p id="updates-empty" class="muted">Пока нет уведомлений.</p>
+    <ul id="updates-list" class="updates"></ul>
+  </section>
+
+  <section class="card">
+    <h2>Добавить ссылку</h2>
+    <form id="link-form">
+      <div class="row">
+        <input id="link-url" type="url" placeholder="https://github.com/golang/go" required>
+      </div>
+      <div class="row">
+        <input id="link-tags" placeholder="теги через запятую">
+        <input id="link-filters" placeholder="фильтры через запятую">
+        <button class="primary" type="submit">Добавить</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Отслеживаемые ссылки</h2>
+    <table>
+      <thead>
+        <tr><th>Ссылка</th><th>Теги</th><th>Фильтры</th><th></th></tr>
+      </thead>
+      <tbody id="links-body"></tbody>
+    </table>
+    <p id="empty" class="muted"></p>
+    <div class="pager">
+      <button id="prev" type="button">← Назад</button>
+      <span id="page" class="muted"></span>
+      <button id="next" type="button">Вперёд →</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const PAGE_SIZE = 10;
+const state = { chatId: null, offset: 0 };
+const $ = (id) => document.getElementById(id);
+
+// --- утилиты -------------------------------------------------------------
+
+// Создаёт DOM-элемент. Строки-потомки превращаются в текстовые узлы,
+// поэтому пользовательские данные не могут внедрить HTML (защита от XSS).
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else if (key === "class") node.className = value;
+    else node.setAttribute(key, value);
+  }
+  node.append(...children);
+  return node;
+}
+
+const parseList = (str) => str.split(",").map((s) => s.trim()).filter(Boolean);
+
+let errorTimer;
+function showError(message) {
+  const box = $("error");
+  box.textContent = message;
+  box.hidden = false;
+  clearTimeout(errorTimer);
+  errorTimer = setTimeout(() => { box.hidden = true; }, 6000);
+}
+
+// Единая обёртка над fetch: разбирает тело, превращает ошибки API в исключения.
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text(); // у некоторых ответов (POST /tg-chat/{id}) тело пустое
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* не JSON — игнорируем */ }
+  if (!res.ok) throw new Error(data?.description || `HTTP ${res.status}`);
+  return data;
+}
+
+// Запускает действие и показывает ошибку, если оно упало.
+async function guarded(action) {
+  try { await action(); } catch (e) { showError(e.message); }
+}
+
+// --- чаты ----------------------------------------------------------------
+
+async function loadChats() {
+  const data = await api("GET", "/tg-chat?limit=200");
+  const select = $("chat-select");
+  select.replaceChildren(...data.chats.map((c) => el("option", { value: c.id }, `Чат ${c.id}`)));
+
+  const exists = data.chats.some((c) => c.id === state.chatId);
+  if (!exists) state.chatId = data.chats.length ? data.chats[0].id : null;
+  if (state.chatId !== null) select.value = state.chatId;
+
+  await loadLinks();
+  restartUpdates();
+}
+
+$("chat-select").addEventListener("change", (e) => guarded(async () => {
+  state.chatId = Number(e.target.value);
+  state.offset = 0;
+  restartUpdates();
+  await loadLinks();
+}));
+
+$("chat-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  guarded(async () => {
+    const id = Number($("chat-new").value);
+    if (!Number.isInteger(id) || id <= 0) throw new Error("ID чата должен быть положительным целым числом");
+    await api("POST", `/tg-chat/${id}`);
+    $("chat-new").value = "";
+    state.chatId = id;
+    state.offset = 0;
+    await loadChats();
+  });
+});
+
+$("chat-delete").addEventListener("click", () => guarded(async () => {
+  if (!confirm(`Удалить чат ${state.chatId} вместе со всеми его ссылками?`)) return;
+  await api("DELETE", `/tg-chat/${state.chatId}`);
+  state.chatId = null;
+  state.offset = 0;
+  await loadChats();
+}));
+
+// --- ссылки --------------------------------------------------------------
+
+async function loadLinks() {
+  const hasChat = state.chatId !== null;
+  $("chat-delete").disabled = !hasChat;
+  $("link-form").querySelectorAll("input, button").forEach((n) => { n.disabled = !hasChat; });
+
+  if (!hasChat) {
+    $("links-body").replaceChildren();
+    $("empty").textContent = "Создайте чат, чтобы добавлять ссылки.";
+    $("prev").disabled = true;
+    $("next").disabled = true;
+    $("page").textContent = "";
+    return;
+  }
+
+  // Просим на одну запись больше страницы: если она пришла, значит, есть следующая страница.
+  const query = new URLSearchParams({
+    tgChatId: state.chatId, limit: PAGE_SIZE + 1, offset: state.offset,
+  });
+  const data = await api("GET", `/links?${query}`);
+  const hasNext = data.links.length > PAGE_SIZE;
+  const links = data.links.slice(0, PAGE_SIZE);
+
+  // Удалили последнюю ссылку на странице — возвращаемся на предыдущую.
+  if (links.length === 0 && state.offset > 0) {
+    state.offset -= PAGE_SIZE;
+    return loadLinks();
+  }
+
+  $("links-body").replaceChildren(...links.map(renderRow));
+  $("empty").textContent = links.length ? "" : "Ссылок пока нет.";
+  $("prev").disabled = state.offset === 0;
+  $("next").disabled = !hasNext;
+  $("page").textContent = `Страница ${state.offset / PAGE_SIZE + 1}`;
+}
+
+const chips = (items) => items.map((t) => el("span", { class: "chip" }, t));
+
+function renderRow(link) {
+  const tr = el("tr");
+
+  const show = () => {
+    // Делаем <a> только для http(s): иначе "javascript:..." в ссылке стал бы дырой.
+    const urlNode = /^https?:\/\//i.test(link.url)
+      ? el("a", { href: link.url, target: "_blank", rel: "noopener noreferrer" }, link.url)
+      : document.createTextNode(link.url);
+
+    tr.replaceChildren(
+      el("td", {}, urlNode),
+      el("td", {}, ...chips(link.tags)),
+      el("td", {}, ...chips(link.filters)),
+      el("td", { class: "actions" },
+        el("button", { type: "button", onclick: edit }, "Изменить"),
+        el("button", { type: "button", class: "danger",
+                       onclick: () => guarded(() => removeLink(link)) }, "Удалить"),
+      ),
+    );
+  };
+
+  const edit = () => {
+    const tagsInput = el("input", { value: link.tags.join(", "), placeholder: "теги через запятую" });
+    const filtersInput = el("input", { value: link.filters.join(", "), placeholder: "фильтры через запятую" });
+
+    const save = () => guarded(async () => {
+      link = await api("PUT", `/links/${link.id}`, {
+        tgChatId: state.chatId,
+        tags: parseList(tagsInput.value),
+        filters: parseList(filtersInput.value),
+      });
+      show();
+    });
+
+    tr.replaceChildren(
+      el("td", {}, link.url),
+      el("td", {}, tagsInput),
+      el("td", {}, filtersInput),
+      el("td", { class: "actions" },
+        el("button", { type: "button", class: "primary", onclick: save }, "Сохранить"),
+        el("button", { type: "button", onclick: show }, "Отмена"),
+      ),
+    );
+  };
+
+  show();
+  return tr;
+}
+
+async function removeLink(link) {
+  await api("DELETE", "/links", { link: link.url, tgChatId: state.chatId });
+  await loadLinks();
+}
+
+$("link-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const form = e.currentTarget; // после await currentTarget уже будет null
+  guarded(async () => {
+    await api("POST", "/links", {
+      link: $("link-url").value.trim(),
+      tags: parseList($("link-tags").value),
+      filters: parseList($("link-filters").value),
+      tgChatId: state.chatId,
+    });
+    form.reset();
+    await loadLinks();
+  });
+});
+
+$("prev").addEventListener("click", () => guarded(async () => {
+  state.offset = Math.max(0, state.offset - PAGE_SIZE);
+  await loadLinks();
+}));
+
+$("next").addEventListener("click", () => guarded(async () => {
+  state.offset += PAGE_SIZE;
+  await loadLinks();
+}));
+
+// --- уведомления ---------------------------------------------------------
+
+const POLL_MS = 5000;
+let lastUpdateId = 0;   // id последнего уже показанного уведомления
+let pollTimer = null;
+let unseen = 0;         // сколько уведомлений пришло, пока вкладка была скрыта
+
+function renderUpdate(u) {
+  return el("li", { class: "update" },
+    el("div", { class: "muted" }, new Date(u.createdAt).toLocaleString("ru-RU")),
+    el("div", { class: "update-text" }, u.description), // textContent: HTML из текста не исполнится
+  );
+}
+
+async function pollUpdates(initial = false) {
+  if (state.chatId === null) return;
+  const chatAtStart = state.chatId;
+
+  const query = new URLSearchParams({
+    tgChatId: chatAtStart, afterId: lastUpdateId, limit: initial ? 20 : 50,
+  });
+  const data = await api("GET", `/updates?${query}`);
+  if (chatAtStart !== state.chatId) return; // пользователь успел переключить чат
+
+  if (data.updates.length === 0) return;
+
+  // API отдаёт по возрастанию id, а показываем новые сверху.
+  $("updates-list").prepend(...data.updates.slice().reverse().map(renderUpdate));
+  $("updates-empty").hidden = true;
+  lastUpdateId = data.updates[data.updates.length - 1].id;
+
+  if (!initial && document.hidden) {
+    unseen += data.updates.length;
+    document.title = `(${unseen}) Link Tracker`;
+  }
+}
+
+function restartUpdates() {
+  clearInterval(pollTimer);
+  lastUpdateId = 0;
+  $("updates-list").replaceChildren();
+  $("updates-empty").hidden = false;
+  if (state.chatId === null) return;
+
+  guarded(() => pollUpdates(true));
+  // Ошибки фонового опроса не показываем баннером, иначе при остановленном сервере он мигал бы каждые 5 секунд.
+  pollTimer = setInterval(() => pollUpdates().catch(() => {}), POLL_MS);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) { unseen = 0; document.title = "Link Tracker"; }
+});
+
+// --- старт ---------------------------------------------------------------
+guarded(loadChats);
+</script>
+</body>
+</html>

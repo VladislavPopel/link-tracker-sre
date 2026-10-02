@@ -14,7 +14,31 @@ import (
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain"
 )
 
-const pgUniqueViolation = "23505"
+const (
+	pgUniqueViolation = "23505"
+
+	insertTagSQL = `INSERT INTO link_tags (chat_id, link_id, tag) VALUES ($1, $2, $3)
+		ON CONFLICT DO NOTHING`
+	insertFilterSQL = `INSERT INTO link_filters (chat_id, link_id, filter) VALUES ($1, $2, $3)
+		ON CONFLICT DO NOTHING`
+
+	// Теги и фильтры собираются коррелированными подзапросами, а не JOIN'ами:
+	// два LEFT JOIN по разным таблицам дали бы декартово произведение (дубли в массивах).
+	getLinksSQL = `
+SELECT l.id,
+       l.url,
+       COALESCE((SELECT array_agg(t.tag ORDER BY t.tag)
+                 FROM link_tags t
+                 WHERE t.chat_id = cl.chat_id AND t.link_id = l.id), '{}'),
+       COALESCE((SELECT array_agg(f.filter ORDER BY f.filter)
+                 FROM link_filters f
+                 WHERE f.chat_id = cl.chat_id AND f.link_id = l.id), '{}')
+FROM links l
+JOIN chat_links cl ON cl.link_id = l.id
+WHERE cl.chat_id = $1
+ORDER BY l.id
+LIMIT $2 OFFSET $3`
+)
 
 // LinkRepo - реализация domain.LinkRepository на raw SQL
 type LinkRepo struct {
@@ -37,7 +61,7 @@ func (r *LinkRepo) AddChat(ctx context.Context, chatID int64) error {
 	return nil
 }
 
-// RemoveChat удаляет чат и каскадно все его ссылки и теги.
+// RemoveChat удаляет чат и каскадно все его ссылки, теги и фильтры.
 func (r *LinkRepo) RemoveChat(ctx context.Context, chatID int64) error {
 	res, err := r.db.ExecContext(ctx,
 		`DELETE FROM chats WHERE id = $1`,
@@ -56,17 +80,39 @@ func (r *LinkRepo) RemoveChat(ctx context.Context, chatID int64) error {
 	return nil
 }
 
+// GetChats возвращает зарегистрированные чаты с пагинацией.
+func (r *LinkRepo) GetChats(ctx context.Context, page domain.Page) ([]*domain.Chat, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, created_at FROM chats ORDER BY id LIMIT $1 OFFSET $2`,
+		page.Limit, page.Offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sql get chats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	chats := make([]*domain.Chat, 0)
+	for rows.Next() {
+		var c domain.Chat
+		if scanErr := rows.Scan(&c.ID, &c.CreatedAt); scanErr != nil {
+			return nil, fmt.Errorf("sql scan chat: %w", scanErr)
+		}
+		chats = append(chats, &c)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("sql rows error: %w", err)
+	}
+	return chats, nil
+}
+
 // AddLink добавляет ссылку для чата в транзакции.
 func (r *LinkRepo) AddLink(ctx context.Context, link *domain.Link) (*domain.Link, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sql begin tx: %w", err)
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	// Rollback после успешного Commit — no-op (вернёт ErrTxDone, он нам не важен).
+	defer func() { _ = tx.Rollback() }()
 
 	// Проверяем, что чат существует
 	var exists bool
@@ -103,16 +149,11 @@ func (r *LinkRepo) AddLink(ctx context.Context, link *domain.Link) (*domain.Link
 		return nil, fmt.Errorf("sql insert chat_link: %w", err)
 	}
 
-	// Вставляем теги
-	for _, tag := range link.Tags {
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO link_tags (chat_id, link_id, tag) VALUES ($1, $2, $3)
-			 ON CONFLICT DO NOTHING`,
-			link.ChatID, linkID, tag,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("sql insert tag: %w", err)
-		}
+	if err = insertValues(ctx, tx, insertTagSQL, link.ChatID, linkID, link.Tags); err != nil {
+		return nil, fmt.Errorf("sql insert tags: %w", err)
+	}
+	if err = insertValues(ctx, tx, insertFilterSQL, link.ChatID, linkID, link.Filters); err != nil {
+		return nil, fmt.Errorf("sql insert filters: %w", err)
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -123,17 +164,65 @@ func (r *LinkRepo) AddLink(ctx context.Context, link *domain.Link) (*domain.Link
 	return link, nil
 }
 
+// UpdateLink заменяет теги и фильтры подписки чата на ссылку (PUT-семантика:
+// то, что не передано, удаляется).
+func (r *LinkRepo) UpdateLink(
+	ctx context.Context,
+	chatID, linkID int64,
+	tags, filters []string,
+) (*domain.Link, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sql begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Подписка должна существовать; заодно достаём url для ответа.
+	var url string
+	err = tx.QueryRowContext(ctx,
+		`SELECT l.url
+		   FROM links l
+		   JOIN chat_links cl ON cl.link_id = l.id
+		  WHERE cl.chat_id = $1 AND l.id = $2`,
+		chatID, linkID,
+	).Scan(&url)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrLinkNotFound
+		}
+		return nil, fmt.Errorf("sql find subscription: %w", err)
+	}
+
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM link_tags WHERE chat_id = $1 AND link_id = $2`, chatID, linkID); err != nil {
+		return nil, fmt.Errorf("sql delete tags: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM link_filters WHERE chat_id = $1 AND link_id = $2`, chatID, linkID); err != nil {
+		return nil, fmt.Errorf("sql delete filters: %w", err)
+	}
+
+	if err = insertValues(ctx, tx, insertTagSQL, chatID, linkID, tags); err != nil {
+		return nil, fmt.Errorf("sql insert tags: %w", err)
+	}
+	if err = insertValues(ctx, tx, insertFilterSQL, chatID, linkID, filters); err != nil {
+		return nil, fmt.Errorf("sql insert filters: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("sql commit: %w", err)
+	}
+
+	return &domain.Link{ID: linkID, URL: url, Tags: tags, Filters: filters, ChatID: chatID}, nil
+}
+
 // RemoveLink удаляет подписку чата на ссылку в транзакции.
 func (r *LinkRepo) RemoveLink(ctx context.Context, chatID int64, url string) (*domain.Link, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sql begin tx: %w", err)
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	defer func() { _ = tx.Rollback() }()
 
 	// Находим ссылку
 	var linkID int64
@@ -145,13 +234,20 @@ func (r *LinkRepo) RemoveLink(ctx context.Context, chatID int64, url string) (*d
 		return nil, fmt.Errorf("sql find link: %w", err)
 	}
 
-	// Удаляем теги подписки
+	// Удаляем теги и фильтры подписки
 	_, err = tx.ExecContext(ctx,
 		`DELETE FROM link_tags WHERE chat_id = $1 AND link_id = $2`,
 		chatID, linkID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sql delete tags: %w", err)
+	}
+	_, err = tx.ExecContext(ctx,
+		`DELETE FROM link_filters WHERE chat_id = $1 AND link_id = $2`,
+		chatID, linkID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sql delete filters: %w", err)
 	}
 
 	// Удаляем подписку
@@ -177,24 +273,9 @@ func (r *LinkRepo) RemoveLink(ctx context.Context, chatID int64, url string) (*d
 	return &domain.Link{ID: linkID, URL: url, ChatID: chatID}, nil
 }
 
-// GetLinks возвращает ссылки чата с пагинацией.
+// GetLinks возвращает ссылки чата с тегами и фильтрами, с пагинацией.
 func (r *LinkRepo) GetLinks(ctx context.Context, chatID int64, page domain.Page) ([]*domain.Link, error) {
-	query, args, err := sq.
-		Select("l.id", "l.url", "COALESCE(array_agg(lt.tag) FILTER (WHERE lt.tag IS NOT NULL), '{}')").
-		From("links l").
-		Join("chat_links cl ON cl.link_id = l.id").
-		LeftJoin("link_tags lt ON lt.link_id = l.id AND lt.chat_id = cl.chat_id").
-		Where(sq.Eq{"cl.chat_id": chatID}).
-		GroupBy("l.id", "l.url").
-		OrderBy("l.id").
-		Limit(uint64(page.Limit)).
-		Offset(uint64(page.Offset)).
-		PlaceholderFormat(sq.Dollar).
-		ToSql()
-	if err != nil {
-		return nil, fmt.Errorf("build query: %w", err)
-	}
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, getLinksSQL, chatID, page.Limit, page.Offset)
 	if err != nil {
 		return nil, fmt.Errorf("sql get links: %w", err)
 	}
@@ -252,18 +333,31 @@ func scanLinks(rows *sql.Rows, chatID int64) ([]*domain.Link, error) {
 	var links []*domain.Link
 	for rows.Next() {
 		var (
-			l    domain.Link
-			tags []string
+			l       domain.Link
+			tags    []string
+			filters []string
 		)
-		if err := rows.Scan(&l.ID, &l.URL, pq.Array(&tags)); err != nil {
+		if err := rows.Scan(&l.ID, &l.URL, pq.Array(&tags), pq.Array(&filters)); err != nil {
 			return nil, fmt.Errorf("sql scan link: %w", err)
 		}
 		l.ChatID = chatID
 		l.Tags = tags
+		l.Filters = filters
 		links = append(links, &l)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sql rows error: %w", err)
 	}
 	return links, nil
+}
+
+// insertValues вставляет значения (теги или фильтры) для подписки чата на ссылку.
+// query — одна из констант insertTagSQL / insertFilterSQL.
+func insertValues(ctx context.Context, tx *sql.Tx, query string, chatID, linkID int64, values []string) error {
+	for _, v := range values {
+		if _, err := tx.ExecContext(ctx, query, chatID, linkID, v); err != nil {
+			return err
+		}
+	}
+	return nil
 }

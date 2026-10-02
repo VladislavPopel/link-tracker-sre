@@ -17,15 +17,13 @@ type BotConfig struct {
 type ScrapperConfig struct {
 	ListenAddr          string `env:"SCRAPPER_LISTEN_ADDR" envDefault:":8081"`
 	BotURL              string `env:"BOT_URL" envDefault:"http://localhost:8080"`
-	ScheduleIntervalSec int    `env:"SCRAPPER_SCHEDULE_INTERVAL_SEC" envDefault:"60"`
+	ScheduleIntervalSec int    `env:"SCRAPPER_SCHEDULE_INTERVAL_SEC" envDefault:"30"`
 
 	GitHubToken         string `env:"GITHUB_TOKEN"`
 	StackOverflowAPIKey string `env:"STACKOVERFLOW_API_KEY"`
 
 	// База данных
 	DatabaseDSN string `env:"DATABASE_DSN,required"` // 5432
-	// Способ доступа к БД: SQL или ORM
-	DatabaseAccessType string `env:"DATABASE_ACCESS_TYPE" envDefault:"SQL"`
 
 	BatchSize int `env:"SCRAPPER_BATCH_SIZE" envDefault:"100"`
 

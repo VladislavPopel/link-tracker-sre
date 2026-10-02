@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,10 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	project "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/config"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/db"
-	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/repository"
+	sqlrepo "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/infrastructure/repository/sql"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/scrapper"
 )
 
@@ -38,43 +41,47 @@ func run() error {
 		return fmt.Errorf("load scrapper config: %w", err)
 	}
 	// База данных
-	linkRepo, err := initRepository(cfg)
+	sqlDB, err := openDB(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	linkRepo := sqlrepo.NewLinkRepo(sqlDB)
+	updateRepo := sqlrepo.NewUpdateRepo(sqlDB)
+	stateRepo := sqlrepo.NewStateRepo(sqlDB)
+
+	sched, err := initScheduler(cfg, linkRepo, updateRepo, stateRepo)
 	if err != nil {
 		return err
 	}
 
-	sched, err := initScheduler(cfg, linkRepo)
-	if err != nil {
-		return err
-	}
-
-	return startServer(cfg, linkRepo, sched)
+	return startServer(cfg, linkRepo, updateRepo, sched)
 }
 
-func initRepository(cfg *config.ScrapperConfig) (domain.LinkRepository, error) {
+func openDB(cfg *config.ScrapperConfig) (*sql.DB, error) {
 	sqlDB, err := db.Open(cfg.DatabaseDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-
 	if err = db.Ping(context.Background(), sqlDB); err != nil {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
-	// Применяем миграции при старте
 	if err = db.RunMigrations(sqlDB); err != nil {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 	slog.Info("migrations applied")
-
-	repo, err := repository.New(sqlDB, cfg.DatabaseDSN, repository.AccessType(cfg.DatabaseAccessType))
-	if err != nil {
-		return nil, fmt.Errorf("create repository: %w", err)
-	}
-	slog.Info("repository initialized", "access-type", cfg.DatabaseAccessType)
-	return repo, nil
+	return sqlDB, nil
 }
 
-func initScheduler(cfg *config.ScrapperConfig, repo domain.LinkRepository) (*scrapper.Scheduler, error) {
+func initScheduler(
+	cfg *config.ScrapperConfig,
+	repo domain.LinkRepository,
+	updates domain.UpdateRepository,
+	state domain.LinkStateRepository,
+) (*scrapper.Scheduler, error) {
 	// Link checkers
 	checkers := []scrapper.LinkChecker{
 		scrapper.NewGitHubChecker(cfg.GitHubToken),
@@ -82,7 +89,7 @@ func initScheduler(cfg *config.ScrapperConfig, repo domain.LinkRepository) (*scr
 	}
 	// Sheduler
 	// MessageSender
-	sender := scrapper.NewHTTPMessageSender(cfg.BotURL)
+	sender := scrapper.NewDBMessageSender(updates)
 
 	interval := time.Duration(cfg.ScheduleIntervalSec) * time.Second
 
@@ -90,6 +97,7 @@ func initScheduler(cfg *config.ScrapperConfig, repo domain.LinkRepository) (*scr
 		repo,
 		checkers,
 		sender,
+		state,
 		interval,
 		cfg.BatchSize,
 		cfg.WorkerCount,
@@ -100,11 +108,20 @@ func initScheduler(cfg *config.ScrapperConfig, repo domain.LinkRepository) (*scr
 	return sched, nil
 }
 
-func startServer(cfg *config.ScrapperConfig, repo domain.LinkRepository, sched *scrapper.Scheduler) error {
-	handler := scrapper.NewHandler(repo)
+func startServer(
+	cfg *config.ScrapperConfig,
+	repo domain.LinkRepository,
+	updates domain.UpdateRepository,
+	sched *scrapper.Scheduler,
+) error {
+	handler := scrapper.NewHandler(repo).WithUpdates(updates)
+	webFS, err := fs.Sub(project.WebFS, "web")
+	if err != nil {
+		return fmt.Errorf("web fs: %w", err)
+	}
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: handler.Router(),
+		Handler: handler.RouterWithStatic(webFS),
 	}
 	// Graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
