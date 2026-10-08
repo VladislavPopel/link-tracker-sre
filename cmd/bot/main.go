@@ -1,5 +1,7 @@
 package main
 
+// для SRE не нужно, как и intrnal/application, bot
+
 import (
 	"context"
 	"errors"

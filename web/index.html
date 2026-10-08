@@ -111,10 +111,6 @@ const PAGE_SIZE = 10;
 const state = { chatId: null, offset: 0 };
 const $ = (id) => document.getElementById(id);
 
-// --- утилиты -------------------------------------------------------------
-
-// Создаёт DOM-элемент. Строки-потомки превращаются в текстовые узлы,
-// поэтому пользовательские данные не могут внедрить HTML (защита от XSS).
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -137,7 +133,6 @@ function showError(message) {
   errorTimer = setTimeout(() => { box.hidden = true; }, 6000);
 }
 
-// Единая обёртка над fetch: разбирает тело, превращает ошибки API в исключения.
 async function api(method, url, body) {
   const res = await fetch(url, {
     method,
@@ -156,7 +151,6 @@ async function guarded(action) {
   try { await action(); } catch (e) { showError(e.message); }
 }
 
-// --- чаты ----------------------------------------------------------------
 
 async function loadChats() {
   const data = await api("GET", "/tg-chat?limit=200");
@@ -199,7 +193,6 @@ $("chat-delete").addEventListener("click", () => guarded(async () => {
   await loadChats();
 }));
 
-// --- ссылки --------------------------------------------------------------
 
 async function loadLinks() {
   const hasChat = state.chatId !== null;
@@ -215,7 +208,7 @@ async function loadLinks() {
     return;
   }
 
-  // Просим на одну запись больше страницы: если она пришла, значит, есть следующая страница.
+ 
   const query = new URLSearchParams({
     tgChatId: state.chatId, limit: PAGE_SIZE + 1, offset: state.offset,
   });
@@ -223,7 +216,7 @@ async function loadLinks() {
   const hasNext = data.links.length > PAGE_SIZE;
   const links = data.links.slice(0, PAGE_SIZE);
 
-  // Удалили последнюю ссылку на странице — возвращаемся на предыдущую.
+
   if (links.length === 0 && state.offset > 0) {
     state.offset -= PAGE_SIZE;
     return loadLinks();
@@ -242,7 +235,6 @@ function renderRow(link) {
   const tr = el("tr");
 
   const show = () => {
-    // Делаем <a> только для http(s): иначе "javascript:..." в ссылке стал бы дырой.
     const urlNode = /^https?:\/\//i.test(link.url)
       ? el("a", { href: link.url, target: "_blank", rel: "noopener noreferrer" }, link.url)
       : document.createTextNode(link.url);
@@ -317,17 +309,17 @@ $("next").addEventListener("click", () => guarded(async () => {
   await loadLinks();
 }));
 
-// --- уведомления ---------------------------------------------------------
+
 
 const POLL_MS = 5000;
-let lastUpdateId = 0;   // id последнего уже показанного уведомления
+let lastUpdateId = 0;  
 let pollTimer = null;
-let unseen = 0;         // сколько уведомлений пришло, пока вкладка была скрыта
+let unseen = 0;
 
 function renderUpdate(u) {
   return el("li", { class: "update" },
     el("div", { class: "muted" }, new Date(u.createdAt).toLocaleString("ru-RU")),
-    el("div", { class: "update-text" }, u.description), // textContent: HTML из текста не исполнится
+    el("div", { class: "update-text" }, u.description),
   );
 }
 
@@ -362,7 +354,7 @@ function restartUpdates() {
   if (state.chatId === null) return;
 
   guarded(() => pollUpdates(true));
-  // Ошибки фонового опроса не показываем баннером, иначе при остановленном сервере он мигал бы каждые 5 секунд.
+
   pollTimer = setInterval(() => pollUpdates().catch(() => {}), POLL_MS);
 }
 
@@ -370,7 +362,7 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) { unseen = 0; document.title = "Link Tracker"; }
 });
 
-// --- старт ---------------------------------------------------------------
+// старт
 guarded(loadChats);
 </script>
 </body>

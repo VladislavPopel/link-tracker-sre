@@ -1,5 +1,7 @@
 package client
 
+// для SRE не нужно
+
 import (
 	"bytes"
 	"context"

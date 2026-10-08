@@ -6,5 +6,5 @@ CREATE TABLE IF NOT EXISTS updates (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Основной запрос фронтенда: "уведомления чата с id больше N"
+
 CREATE INDEX IF NOT EXISTS idx_updates_chat_id_id ON updates(chat_id, id);

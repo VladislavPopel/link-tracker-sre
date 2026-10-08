@@ -31,6 +31,7 @@ func (h *Handler) WithUpdates(repo domain.UpdateRepository) *Handler {
 // listUpdates: GET /updates?tgChatId=1&afterId=0&limit=20
 // Возвращает уведомления чата с id > afterId (по возрастанию id).
 func (h *Handler) listUpdates(w http.ResponseWriter, r *http.Request) {
+	// time.Sleep(5 * time.Second) - проверка для 9го фактора
 	q := r.URL.Query()
 
 	chatID, err := strconv.ParseInt(q.Get("tgChatId"), 10, 64)

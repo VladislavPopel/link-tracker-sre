@@ -22,7 +22,7 @@ func NewStateRepo(db *sql.DB) *StateRepo {
 	return &StateRepo{db: db}
 }
 
-// GetLastSeen возвращает last_seen_at ссылки; для неизвестной или ещё не проверенной ссылки — нулевое время.
+// GetLastSeen возвращает last_seen_at ссылки
 func (r *StateRepo) GetLastSeen(ctx context.Context, url string) (time.Time, error) {
 	var t sql.NullTime
 	err := r.db.QueryRowContext(ctx,
@@ -41,8 +41,7 @@ func (r *StateRepo) GetLastSeen(ctx context.Context, url string) (time.Time, err
 	return t.Time, nil
 }
 
-// AdvanceLastSeen — compare-and-swap. IS NOT DISTINCT FROM (в отличие от "=")
-// корректно сравнивает и NULL с NULL: так работает самая первая проверка ссылки.
+// AdvanceLastSeen - compare-and-swap
 func (r *StateRepo) AdvanceLastSeen(ctx context.Context, url string, expected, next time.Time) (bool, error) {
 	exp := sql.NullTime{Time: expected, Valid: !expected.IsZero()}
 

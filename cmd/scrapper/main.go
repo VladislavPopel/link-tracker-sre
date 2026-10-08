@@ -123,26 +123,10 @@ func startServer(
 		Addr:    cfg.ListenAddr,
 		Handler: handler.RouterWithStatic(webFS),
 	}
-	// Graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		slog.Info("received signal, shutting down", "signal", sig)
-		cancel()
-
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer shutdownCancel()
-		if shutdownErr := httpServer.Shutdown(shutdownCtx); shutdownErr != nil {
-			slog.Error("http server shutdown error", "err", shutdownErr)
-		}
-		if stopErr := sched.Stop(); stopErr != nil {
-			slog.Error("scheduler stop error", "err", stopErr)
-		}
-	}()
+	// ctx отменяется при SIGINT/SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	sched.Start()
 	slog.Info("scrapper listening",
@@ -151,13 +135,38 @@ func startServer(
 		"workers", cfg.WorkerCount,
 	)
 
-	if listenErr := httpServer.ListenAndServe(); !errors.Is(listenErr, http.ErrServerClosed) {
-		return fmt.Errorf("http server ListenAndServe: %w", listenErr)
+	serverErr := make(chan error, 1)
+	go func() {
+		if listenErr := httpServer.ListenAndServe(); !errors.Is(listenErr, http.ErrServerClosed) {
+			serverErr <- fmt.Errorf("http server ListenAndServe: %w", listenErr)
+		}
+	}()
+
+	// Ждём либо сигнал остановки, либо падение сервера
+	var runErr error
+	select {
+	case <-ctx.Done():
+		slog.Info("received signal, shutting down")
+	case runErr = <-serverErr:
+		slog.Error("http server failed, shutting down", "err", runErr)
+	}
+	stop()
+
+	// Порядок важен: сначала перестаём принимать запросы и ждём активные,
+	// затем останавливаем планировщик (дожидаясь текущей проверки)
+	// БД закроется позже, в run(), когда эта функция вернётся
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if shutdownErr := httpServer.Shutdown(shutdownCtx); shutdownErr != nil {
+		slog.Error("http server shutdown error", "err", shutdownErr)
+	}
+	if stopErr := sched.Stop(); stopErr != nil {
+		slog.Error("scheduler stop error", "err", stopErr)
 	}
 
-	<-ctx.Done()
 	slog.Info("scrapper stopped")
-	return nil
+	return runErr
 }
 
 /*

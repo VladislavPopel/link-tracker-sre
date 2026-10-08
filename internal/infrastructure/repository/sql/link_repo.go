@@ -105,13 +105,12 @@ func (r *LinkRepo) GetChats(ctx context.Context, page domain.Page) ([]*domain.Ch
 	return chats, nil
 }
 
-// AddLink добавляет ссылку для чата в транзакции.
+// AddLink добавляет ссылку для чата в транзакции
 func (r *LinkRepo) AddLink(ctx context.Context, link *domain.Link) (*domain.Link, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sql begin tx: %w", err)
 	}
-	// Rollback после успешного Commit — no-op (вернёт ErrTxDone, он нам не важен).
 	defer func() { _ = tx.Rollback() }()
 
 	// Проверяем, что чат существует
@@ -351,8 +350,7 @@ func scanLinks(rows *sql.Rows, chatID int64) ([]*domain.Link, error) {
 	return links, nil
 }
 
-// insertValues вставляет значения (теги или фильтры) для подписки чата на ссылку.
-// query — одна из констант insertTagSQL / insertFilterSQL.
+// insertValues вставляет значения (теги или фильтры) для подписки чата на ссылку
 func insertValues(ctx context.Context, tx *sql.Tx, query string, chatID, linkID int64, values []string) error {
 	for _, v := range values {
 		if _, err := tx.ExecContext(ctx, query, chatID, linkID, v); err != nil {

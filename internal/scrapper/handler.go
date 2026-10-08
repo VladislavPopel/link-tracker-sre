@@ -254,7 +254,7 @@ func (h *Handler) addLink(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, linkToResp(link))
 }
 
-// updateLink: PUT /links/{id} — полная замена тегов и фильтров подписки.
+// updateLink: PUT /links/{id} - полная замена тегов и фильтров подписки
 func (h *Handler) updateLink(w http.ResponseWriter, r *http.Request) {
 	linkID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || linkID <= 0 {
@@ -319,7 +319,7 @@ func (h *Handler) removeLink(w http.ResponseWriter, r *http.Request) {
 
 // helpers
 
-// parsePage читает ?limit= и ?offset=; при отсутствии подставляет значения по умолчанию.
+// parsePage читает ?limit= и ?offset=; при отсутствии подставляет значения по умолчанию
 func parsePage(r *http.Request) (domain.Page, error) {
 	q := r.URL.Query()
 	page := domain.Page{Limit: defaultPageLimit, Offset: 0}

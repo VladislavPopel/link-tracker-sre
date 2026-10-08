@@ -1,5 +1,7 @@
 package bot
 
+// для SRE не нужно
+
 import (
 	"encoding/json"
 	"fmt"

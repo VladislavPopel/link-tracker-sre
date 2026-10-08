@@ -33,9 +33,8 @@ func Ping(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// RunMigrations применяет все pending миграции из папки migrations/.
+// RunMigrations применяет все pending миграции из папки migrations
 func RunMigrations(db *sql.DB) error {
-	// Источник миграций — встроенная файловая система
 	sourceDriver, err := iofs.New(project.MigrationsFS, "migrations")
 	if err != nil {
 		return fmt.Errorf("create migration source: %w", err)

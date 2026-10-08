@@ -1,5 +1,7 @@
 package bot_test
 
+// для SRE не нужно
+
 import (
 	"bytes"
 	"encoding/json"

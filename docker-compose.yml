@@ -1,20 +1,35 @@
 services:
   postgres:
     image: postgres:16
-    container_name: link-tracker-postgresv1
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: link_tracker
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-link_tracker}
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  scrapper:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_DSN: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-link_tracker}?sslmode=disable"
+      SCRAPPER_LISTEN_ADDR: ":8081"
+      SCRAPPER_SCHEDULE_INTERVAL_SEC: ${SCRAPPER_SCHEDULE_INTERVAL_SEC:-60}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      STACKOVERFLOW_API_KEY: ${STACKOVERFLOW_API_KEY:-}
+    ports:
+      - "${SCRAPPER_PORT:-8081}:8081"
+    stop_grace_period: 20s
+    restart: unless-stopped
 
 volumes:
   postgres_data:
