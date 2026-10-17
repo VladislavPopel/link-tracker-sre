@@ -1,0 +1,49 @@
+role: Agent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+customConfig:
+  data_dir: /vector-data-dir
+
+  api:
+    enabled: true
+    address: 0.0.0.0:8686
+
+  sources:
+    k8s:
+      type: kubernetes_logs
+      extra_field_selector: metadata.namespace=link-tracker
+
+  transforms:
+    parse_json:
+      type: remap
+      inputs:
+        - k8s
+      source: |
+        msg = string(.message) ?? ""
+        parsed = parse_json(msg) ?? null
+        if is_object(parsed) {
+          . = merge!(., object!(parsed))
+        }
+
+  sinks:
+    vlogs:
+      type: elasticsearch
+      inputs:
+        - parse_json
+      endpoints:
+        - http://vls-victoria-logs-single-server.logging.svc:9428/insert/elasticsearch/
+      mode: bulk
+      api_version: v8
+      compression: gzip
+      healthcheck:
+        enabled: false
+      query:
+        _msg_field: message
+        _time_field: timestamp
+        _stream_fields: stream,kubernetes.pod_name,kubernetes.container_name,kubernetes.pod_namespace

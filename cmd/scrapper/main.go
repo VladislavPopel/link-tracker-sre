@@ -33,8 +33,7 @@ func main() {
 }
 
 func run() error {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
+	slog.SetDefault(newLogger())
 
 	cfg, err := config.LoadScrapper()
 	if err != nil {
@@ -121,7 +120,7 @@ func startServer(
 	}
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: handler.RouterWithStatic(webFS),
+		Handler: scrapper.LoggingMiddleware(handler.RouterWithStatic(webFS)),
 	}
 
 	// ctx отменяется при SIGINT/SIGTERM

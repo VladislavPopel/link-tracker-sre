@@ -38,7 +38,7 @@ spec:
               done
       containers:
         - name: scrapper
-          image: scrapper:1.0
+          image: scrapper:1.2
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
