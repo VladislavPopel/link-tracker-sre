@@ -33,7 +33,6 @@ go.work.sum
 # .idea/
 # .vscode/
 
-# rar file
-*.rar
+# rar file (not for now)
 # mkv file
-*.mkv
+.mkv

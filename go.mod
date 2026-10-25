@@ -1,6 +1,6 @@
 module gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker
 
-go 1.25.1
+go 1.26.0
 
 require (
 	github.com/caarlos0/env/v11 v11.4.0
@@ -11,6 +11,8 @@ require (
 )
 
 require (
+	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
@@ -18,13 +20,18 @@ require (
 	github.com/lann/builder v0.0.0-20180802200727-47ae307949d0 // indirect
 	github.com/lann/ps v0.0.0-20150810152359-62de8c46ede0 // indirect
 	github.com/moby/term v0.5.2 // indirect
+	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
+	github.com/prometheus/client_model v0.6.3 // indirect
+	github.com/prometheus/common v0.72.0 // indirect
+	github.com/prometheus/procfs v0.22.0 // indirect
 	go.opentelemetry.io/otel/metric v1.41.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )
 
 require (
@@ -32,5 +39,6 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
+	github.com/prometheus/client_golang v1.25.0
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 )

@@ -6,10 +6,11 @@ import (
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/client"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/metrics"
 )
 
 // DBMessageSender доставляет уведомления в веб-интерфейс: кладёт их в БД,
-// откуда фронтенд забирает их через GET /updates.
+// откуда фронтенд забирает их через GET /updates
 type DBMessageSender struct {
 	repo domain.UpdateRepository
 }
@@ -22,5 +23,6 @@ func (s *DBMessageSender) SendUpdate(ctx context.Context, update client.LinkUpda
 	if err := s.repo.AddUpdates(ctx, update.TgChatIDs, update.URL, update.Description); err != nil {
 		return fmt.Errorf("db message sender: %w", err)
 	}
+	metrics.NotificationsCreated.Add(float64(len(update.TgChatIDs)))
 	return nil
 }

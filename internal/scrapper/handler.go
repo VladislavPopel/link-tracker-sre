@@ -14,6 +14,7 @@ import (
 
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/httphelper"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/metrics"
 )
 
 const (
@@ -251,6 +252,7 @@ func (h *Handler) addLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("link added", "chat_id", req.TgChatID, "url", req.Link)
+	metrics.LinksAdded.Inc()
 	writeJSON(w, http.StatusOK, linkToResp(link))
 }
 
@@ -314,6 +316,7 @@ func (h *Handler) removeLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("link removed", "chat_id", req.TgChatID, "url", req.Link)
+	metrics.LinksRemoved.Inc()
 	writeJSON(w, http.StatusOK, linkToResp(link))
 }
 

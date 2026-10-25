@@ -11,6 +11,7 @@ import (
 	"github.com/go-co-op/gocron/v2"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/client"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain"
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/metrics"
 )
 
 const (
@@ -89,6 +90,8 @@ func (s *Scheduler) Stop() error {
 // checkAll - один цикл проверки: загружает ссылки батчами и обрабатывает параллельно
 func (s *Scheduler) checkAll(ctx context.Context) {
 	slog.Info("scheduler: starting check cycle")
+	start := time.Now()
+	defer func() { metrics.CheckCycleDuration.Observe(time.Since(start).Seconds()) }()
 	offset := 0
 	total := 0
 
@@ -179,21 +182,26 @@ func (s *Scheduler) processLink(ctx context.Context, job *linkJob) error {
 	if checker == nil {
 		return nil
 	}
+	name := checkerName(checker)
 
 	since, err := s.state.GetLastSeen(ctx, job.url)
 	if err != nil {
+		metrics.LinkChecks.WithLabelValues(name, metrics.ResultError).Inc()
 		return fmt.Errorf("get state for %s: %w", job.url, err)
 	}
 	isFirstCheck := since.IsZero()
 
 	result, err := checker.Check(ctx, job.url, since)
 	if errors.Is(err, ErrNoNewEvents) || errors.Is(err, client.ErrNoUpdates) {
+		metrics.LinkChecks.WithLabelValues(name, metrics.ResultNoUpdates).Inc()
 		return nil
 	}
 	if err != nil {
+		metrics.LinkChecks.WithLabelValues(name, metrics.ResultError).Inc()
 		return fmt.Errorf("check %s: %w", job.url, err)
 	}
 	if result == nil {
+		metrics.LinkChecks.WithLabelValues(name, metrics.ResultNoUpdates).Inc()
 		return nil
 	}
 
@@ -201,6 +209,7 @@ func (s *Scheduler) processLink(ctx context.Context, job *linkJob) error {
 	// проигравший молча пропускает событие, иначе пользователь получил бы дубль.
 	won, err := s.state.AdvanceLastSeen(ctx, job.url, since, result.UpdatedAt.Add(time.Second))
 	if err != nil {
+		metrics.LinkChecks.WithLabelValues(name, metrics.ResultError).Inc()
 		return fmt.Errorf("advance state for %s: %w", job.url, err)
 	}
 	if !won {
@@ -208,6 +217,7 @@ func (s *Scheduler) processLink(ctx context.Context, job *linkJob) error {
 	}
 
 	if isFirstCheck || result.Info == nil {
+		metrics.LinkChecks.WithLabelValues(name, metrics.ResultNoUpdates).Inc()
 		return nil
 	}
 
@@ -217,14 +227,28 @@ func (s *Scheduler) processLink(ctx context.Context, job *linkJob) error {
 		TgChatIDs:   job.chatIDs,
 	}
 	if err = s.sender.SendUpdate(ctx, update); err != nil {
+		metrics.LinkChecks.WithLabelValues(name, metrics.ResultError).Inc()
 		return fmt.Errorf("send update for %s: %w", job.url, err)
 	}
+	metrics.LinkChecks.WithLabelValues(name, metrics.ResultUpdated).Inc()
 
 	slog.Info("scheduler: update sent",
 		"url", job.url,
 		"chats", len(job.chatIDs),
 	)
 	return nil
+}
+
+// checkerName возвращает значение метки "checker"
+func checkerName(c LinkChecker) string {
+	switch c.(type) {
+	case *GitHubChecker:
+		return "github"
+	case *StackOverflowChecker:
+		return "stackoverflow"
+	default:
+		return "other"
+	}
 }
 
 // // reportFailures собирает все неудачные ссылки по чатам и отправляет отчёт каждому пользователю

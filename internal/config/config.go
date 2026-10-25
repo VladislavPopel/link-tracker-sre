@@ -16,6 +16,7 @@ type BotConfig struct {
 
 type ScrapperConfig struct {
 	ListenAddr          string `env:"SCRAPPER_LISTEN_ADDR" envDefault:":8081"`
+	MetricsAddr         string `env:"SCRAPPER_METRICS_ADDR" envDefault:":9090"`
 	BotURL              string `env:"BOT_URL" envDefault:"http://localhost:8080"`
 	ScheduleIntervalSec int    `env:"SCRAPPER_SCHEDULE_INTERVAL_SEC" envDefault:"30"`
 

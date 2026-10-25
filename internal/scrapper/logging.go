@@ -3,7 +3,10 @@ package scrapper
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
+
+	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/metrics"
 )
 
 // statusRecorder запоминает код ответа, который записал обработчик
@@ -17,11 +20,13 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap нужен http.ResponseController, чтобы обёртка не прятала возможности исходного writer'а
 func (r *statusRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
 
-// LoggingMiddleware пишет одну структурированнную запись на каждый HTTP запрос
+// LoggingMiddleware на каждый HTTP-запрос пишет одну структурированную запись в лог
+// и обновляет HTTP-метрики.
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -29,10 +34,19 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(rec, r)
 
+		elapsed := time.Since(start)
+
 		route := r.Pattern
 		if route == "" {
 			route = r.URL.Path
 		}
+
+		metricRoute := r.Pattern
+		if metricRoute == "" {
+			metricRoute = "unmatched"
+		}
+		metrics.HTTPRequests.WithLabelValues(r.Method, metricRoute, strconv.Itoa(rec.status)).Inc()
+		metrics.HTTPDuration.WithLabelValues(r.Method, metricRoute).Observe(elapsed.Seconds())
 
 		level := slog.LevelInfo
 		switch {
@@ -48,7 +62,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			"method", r.Method,
 			"route", route,
 			"status", rec.status,
-			"duration_ms", float64(time.Since(start).Microseconds())/1000,
+			"duration_ms", float64(elapsed.Microseconds())/1000,
 		)
 	})
 }

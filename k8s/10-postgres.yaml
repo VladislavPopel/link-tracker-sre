@@ -31,6 +31,11 @@ spec:
     metadata:
       labels:
         app: postgres
+      # Victoria metrics находит под по аннотациям
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9187"
+        prometheus.io/path: "/metrics"
     spec:
       terminationGracePeriodSeconds: 30
       containers:
@@ -82,6 +87,36 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+        # экспортер, отдает метрики на порту 9187      
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+          ports:
+            - name: metrics
+              containerPort: 9187
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: link-tracker-config
+                  key: POSTGRES_DB
+            - name: DATA_SOURCE_URI
+              value: "localhost:5432/$(POSTGRES_DB)?sslmode=disable"
+            - name: DATA_SOURCE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: link-tracker-config
+                  key: POSTGRES_USER
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: link-tracker-secret
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
   volumeClaimTemplates:
     - metadata:
         name: data

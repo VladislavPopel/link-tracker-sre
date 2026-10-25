@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	project "gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/config"
 	"gitlab.education.tbank.ru/backend-academy-go-2025/homeworks/link-tracker/internal/domain"
@@ -123,6 +124,10 @@ func startServer(
 		Handler: scrapper.LoggingMiddleware(handler.RouterWithStatic(webFS)),
 	}
 
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsServer := &http.Server{Addr: cfg.MetricsAddr, Handler: metricsMux}
+
 	// ctx отменяется при SIGINT/SIGTERM
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -134,10 +139,15 @@ func startServer(
 		"workers", cfg.WorkerCount,
 	)
 
-	serverErr := make(chan error, 1)
+	serverErr := make(chan error, 2)
 	go func() {
 		if listenErr := httpServer.ListenAndServe(); !errors.Is(listenErr, http.ErrServerClosed) {
 			serverErr <- fmt.Errorf("http server ListenAndServe: %w", listenErr)
+		}
+	}()
+	go func() {
+		if listenErr := metricsServer.ListenAndServe(); !errors.Is(listenErr, http.ErrServerClosed) {
+			serverErr <- fmt.Errorf("metrics server ListenAndServe: %w", listenErr)
 		}
 	}()
 
@@ -162,6 +172,9 @@ func startServer(
 	}
 	if stopErr := sched.Stop(); stopErr != nil {
 		slog.Error("scheduler stop error", "err", stopErr)
+	}
+	if shutdownErr := metricsServer.Shutdown(shutdownCtx); shutdownErr != nil {
+		slog.Error("metrics server shutdown error", "err", shutdownErr)
 	}
 
 	slog.Info("scrapper stopped")
