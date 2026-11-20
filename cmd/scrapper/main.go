@@ -119,9 +119,12 @@ func startServer(
 	if err != nil {
 		return fmt.Errorf("web fs: %w", err)
 	}
+	delay := time.Duration(cfg.FaultDelayMs) * time.Millisecond
 	httpServer := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: scrapper.LoggingMiddleware(handler.RouterWithStatic(webFS)),
+		Addr: cfg.ListenAddr,
+		Handler: scrapper.LoggingMiddleware(
+			scrapper.FaultInjection(cfg.FaultErrorRate, delay, handler.RouterWithStatic(webFS)),
+		),
 	}
 
 	metricsMux := http.NewServeMux()

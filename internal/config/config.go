@@ -15,6 +15,10 @@ type BotConfig struct {
 }
 
 type ScrapperConfig struct {
+	// Искусственные сбои
+	FaultErrorRate float64 `env:"FAULT_ERROR_RATE" envDefault:"0"`
+	FaultDelayMs   int     `env:"FAULT_DELAY_MS"   envDefault:"0"`
+
 	ListenAddr          string `env:"SCRAPPER_LISTEN_ADDR" envDefault:":8081"`
 	MetricsAddr         string `env:"SCRAPPER_METRICS_ADDR" envDefault:":9090"`
 	BotURL              string `env:"BOT_URL" envDefault:"http://localhost:8080"`
@@ -60,6 +64,12 @@ func LoadScrapper() (*ScrapperConfig, error) {
 	}
 	if cfg.WorkerCount < 1 {
 		return nil, fmt.Errorf("SCRAPPER_WORKER_COUNT must be >= 1, got %d", cfg.WorkerCount)
+	}
+	if cfg.FaultErrorRate < 0 || cfg.FaultErrorRate > 1 {
+		return nil, fmt.Errorf("FAULT_ERROR_RATE must be between 0 and 1, got %v", cfg.FaultErrorRate)
+	}
+	if cfg.FaultDelayMs < 0 {
+		return nil, fmt.Errorf("FAULT_DELAY_MS must be >= 0, got %d", cfg.FaultDelayMs)
 	}
 	return cfg, nil
 }
